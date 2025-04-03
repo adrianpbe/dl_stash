@@ -70,3 +70,27 @@ def test_hyper_gru():
 #     assert output.shape == (batch_size, timesteps, rnn_units)
 
 
+def test_hyper_dense():
+    batch_size = 4
+    input_size = 16
+    dense_units = 8
+
+    total_params = hyper.get_total_dense_parameters(input_size, dense_units)
+
+    inputs = layers.Input(shape=(input_size,), dtype=tf.float32)
+    params = layers.Input(shape=(total_params,), dtype=tf.float32)
+
+    dense = hyper.HyperDense(units=dense_units, activation="relu")
+
+    y = dense([inputs, params])
+
+    dense_model = keras.Model(inputs=(inputs, params), outputs=y)
+
+
+    # Test with random data
+    x = np.random.random((batch_size, input_size))
+    p = np.random.random((batch_size, total_params))
+
+    output = dense_model.predict([x, p])
+
+    assert output.shape == (batch_size, dense_units)

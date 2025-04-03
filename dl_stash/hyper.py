@@ -18,7 +18,9 @@ def num_params_from_shapes(param_shapes):
     return total_params
 
 
-def unstack_gru_params(parameters, parameters_shapes):
+def unstack_gru_params(
+        parameters: tf.Tensor, parameters_shapes: list[tuple]
+        ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     batch_size = tf.shape(parameters)[0]
     kernel_shape, recurrent_kernel_shape, bias_shape = parameters_shapes
 
@@ -42,7 +44,9 @@ def unstack_gru_params(parameters, parameters_shapes):
     return kernel, recurrent_kernel, bias
 
 
-def get_gru_parameters_shapes(input_shape: int | tuple | tf.TensorShape, units, use_bias=True, reset_after=True):
+def get_gru_parameters_shapes(
+        input_shape: int | tuple | tf.TensorShape, units: int, use_bias: bool=True, reset_after=True
+        ) -> list[tuple]:
     if not isinstance(input_shape, int):
         input_dim = input_shape[-1]
     else:
@@ -66,7 +70,9 @@ def get_gru_parameters_shapes(input_shape: int | tuple | tf.TensorShape, units, 
     return [kernel_shape, recurrent_kernel_shape, bias_shape]
 
 
-def get_total_gru_parameters(input_size, rnn_units, use_bias=True, reset_after=True):
+def get_total_gru_parameters(
+        input_size: int | tuple | tf.TensorShape, rnn_units: int, use_bias: bool=True, reset_after=True
+        ) -> int:
     param_shapes = get_gru_parameters_shapes(input_size, rnn_units, use_bias, reset_after)
     total_params = num_params_from_shapes(param_shapes)
     return total_params
@@ -218,3 +224,87 @@ class HyperGRUCell(layers.Layer):
         })
         return config
 
+
+def unstack_dense_params(parameters: tf.Tensor, parameters_shapes: list[tuple]) -> tuple[tf.Tensor, tf.Tensor]:
+    batch_size = tf.shape(parameters)[0]
+    kernel_shape, bias_shape = parameters_shapes
+    num_kernel_params = tf.math.reduce_prod(kernel_shape)
+
+    # Reshape parameters into kernel and bias
+    kernel = tf.reshape(parameters[..., :num_kernel_params], 
+                        [batch_size, *kernel_shape])
+    if bias_shape is not None:
+        num_bias = tf.math.reduce_prod(bias_shape)
+
+        bias = tf.reshape(parameters[..., num_kernel_params:num_kernel_params+num_bias], 
+                    [batch_size, *bias_shape])
+    else:
+        bias = None
+
+    return kernel, bias
+
+
+def get_dense_parameters_shapes(input_shape: int | tuple | tf.TensorShape, units: int, use_bias: bool=True) -> list[tuple]:
+    if not isinstance(input_shape, int):
+        input_dim = input_shape[-1]
+    else:
+        input_dim = input_shape
+    kernel_shape = (input_dim, units)
+
+    if use_bias:
+        bias_shape = (units,)
+    else:
+        bias_shape = None
+
+    return [kernel_shape, bias_shape]
+
+
+def get_total_dense_parameters(input_size: int | tuple | tf.TensorShape, units: int, use_bias: bool=True) -> int:
+    param_shapes = get_dense_parameters_shapes(input_size, units, use_bias)
+    total_params = num_params_from_shapes(param_shapes)
+    return total_params
+
+
+class HyperDense(layers.Layer):
+    def __init__(self, units, activation=None, use_bias=True, **kwargs):
+        super(HyperDense, self).__init__(**kwargs)
+        self.units = units
+        self.activation = activations.get(activation)
+        self.use_bias = use_bias
+        self.supports_masking = True
+
+    def build(self, input_shape):
+        # input_shape is a tuple of (batch_size, input_dim) for the inputs
+        # and (batch_size, num_params) for the parameters
+        assert isinstance(input_shape, (list, tuple)) and len(input_shape) == 2
+        # input_shape[0] is the input to the layer, input_shape[1] is parameters
+        input_shape = input_shape[0]
+        self.parameters_shapes = get_dense_parameters_shapes(input_shape, self.units)
+        self._expand_bias = len(input_shape) == 3  # TODO: it works for len(input_shape) 2 with no expand_dim, what to do with bigger dimension numebers?
+        self.built = True
+
+    def call(self, inputs):
+        # inputs is a list of [x, parameters]
+        x, parameters = inputs
+
+        kernel, bias = unstack_dense_params(parameters, self.parameters_shapes)
+
+        outputs = tf.einsum("i...j,ijk->i...k", x, kernel)
+        if self.use_bias:
+            if self._expand_bias:
+                bias = tf.expand_dims(bias, axis=1)
+            outputs = outputs + bias
+
+        if self.activation is not None:
+            outputs = self.activation(outputs)
+
+        return outputs
+
+    def get_config(self):
+        config = super(HyperDense, self).get_config()
+        config.update({
+            "units": self.units,
+            "activation": activations.serialize(self.activation),
+            "use_bias": self.use_bias,
+        })
+        return config
