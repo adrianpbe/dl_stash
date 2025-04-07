@@ -7,8 +7,10 @@ name = "dl-stash"
 version = "0.1.0"
 description = "Implementation of any kind of Deep Learning models, layers or algorithms"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
+    "matplotlib>=3.10.1",
+    "tensorflow-datasets>=4.9.8",
     "tensorflow[and-cuda]==2.16.2",
 ]
 
