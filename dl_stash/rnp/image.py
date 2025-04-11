@@ -117,7 +117,6 @@ def get_inverse_affine_transformation_matrix(rotation, shear, offset, images):
     return transform_matrix
 
 
-
 def extract_affine_params(image, params):
     """Extracts and normalizes affine transformation parameters from a parameter tensor.
     

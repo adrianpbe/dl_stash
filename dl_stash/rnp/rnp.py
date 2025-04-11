@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
-from tensorflow.keras.application import resnet
+from tensorflow.keras.applications import resnet
 import tensorflow as tf
 from tensorflow import keras
 from  tensorflow.keras import layers
@@ -60,19 +60,26 @@ def get_encoder(backbone: keras.Model, input_shape: tuple[int, ...], embedding_s
 
 @dataclass
 class RNPHParams:
-    embedding_size: int
-    action_embedding_size: int
-    parametrized_encoders_units: int
-    parametrized_decoders_units: int
-    decoder_state_image_shape: tuple[int, int, int]
-    hyper_decoders_units: list[int] | None
+    img_shape: tuple[int, int, int]
+    embedding_size: int=32
+    action_embedding_size: int=32
+    levels: int=3
+    parametrized_encoders_units: int=32
+    parametrized_decoders_units: int=32
+    sequence_length: int=8
+    scale_offset: float=1.0 # TODO: check how it is used
+    decoder_state_image_shape: tuple[int, int, int] | None = None
+    hyper_decoders_units: list[int] = field(default_factory=lambda:  [64, 64])
 
     def __post_init__(self):
-        self.x_size: int = int(np.sum(decoder_image_shape))
+        if self.decoder_state_image_shape is None:
+            self.decoder_state_image_shape = self.img_shape
+        self.x_dec_size: int = int(np.prod(self.decoder_state_image_shape))
 
 
 # Compute hypernetwork output size
-def compute_hypernetwork_params(hparams: RNPHParams, decoder_size: int, transition_rnn_units: int, emb_zero_size: int):
+def compute_hypernetwork_params(
+        hparams: RNPHParams, decoder_size: int, transition_rnn_units: int, emb_zero_size: int):
 
     encoder_input_size = hparams.embedding_size + hparams.action_embedding_size
     encoder_dense1_num_params = hyper.get_total_dense_parameters(
@@ -86,7 +93,7 @@ def compute_hypernetwork_params(hparams: RNPHParams, decoder_size: int, transiti
         transition_rnn_units, hparams.parametrized_decoders_units
     )
     decoder_dense2_num_params = hyper.get_total_dense_parameters(
-        params.parametrized_decoders_units, decoder_size
+        hparams.parametrized_decoders_units, decoder_size
     )
 
     # Parametrized state transition function hyper layers 
@@ -104,7 +111,9 @@ def compute_hypernetwork_params(hparams: RNPHParams, decoder_size: int, transiti
 
 def compute_h_state_params(hparams: RNPHParams):
     return compute_hypernetwork_params(
-        hparams, decoder_size=hparams.x_size, transition_rnn_units=hparams.embedding_size, emb_zero_size=hparams.embedding_size
+        hparams, decoder_size=hparams.x_dec_size,
+        transition_rnn_units=hparams.embedding_size, 
+        emb_zero_size=hparams.embedding_size
     )
 
 
@@ -135,9 +144,8 @@ def build_hypernetwork_decoder(units: list[int], embedding_size: int, output_siz
         lambda x: tf.split(x, splits, axis=1)
     )(gen_params)
 
-    h = keras.Model(inputs=z_input, outptus=splitted_params)
+    h = keras.Model(inputs=z_input, outputs=splitted_params)
     return h
-
 
 
 def build_parametrized_models(hparams: RNPHParams, gen_params: Sequence[int],
@@ -153,7 +161,7 @@ def build_parametrized_models(hparams: RNPHParams, gen_params: Sequence[int],
     z_enc_input = layers.Input(shape=(embedding_size,), dtype=tf.float32)
     a_emb_enc_input = layers.Input(shape=(action_embedding_size,), dtype=tf.float32)
 
-    x_enc = layers.Concatenate([z_enc_input, a_emb_enc_input])
+    x_enc = layers.Concatenate()([z_enc_input, a_emb_enc_input])
     x_enc = hyper.HyperDense(
         hparams.parametrized_encoders_units, activation="relu")([x_enc, enc_dense1_params_in])
     y_enc = hyper.HyperDense(
@@ -172,11 +180,11 @@ def build_parametrized_models(hparams: RNPHParams, gen_params: Sequence[int],
     y_dec = hyper.HyperDense(
         decoder_size, activation=None)([x_dec, dec_dense2_params_in])
 
-    decoder = keras.Model(inputs=[z_dec_input, dec_dense1_num_params, dec_dense2_num_params],
+    decoder = keras.Model(inputs=[z_dec_input, dec_dense1_params_in, dec_dense2_params_in],
                           outputs=y_dec)
 
     # RNN
-    rnn_input = layers.Input(shape=(hparams.parametrized_encoders_units), dtype=tf.float32)
+    rnn_input = layers.Input(shape=(hparams.parametrized_encoders_units,), dtype=tf.float32)
     rnn_params_in = layers.Input(shape=(rnn_num_params,), dtype=tf.float32)
 
     rnn_state_input = layers.Input(shape=(rnn_units,), dtype=tf.float32)
@@ -197,14 +205,14 @@ class HyperNetwork:
     decoder: keras.Model
     rnn: keras.Model
     rnn_units: int
-    states: tf.Tensor | None
+    states: tf.Tensor | None = None
 
     def reset_state(self, batch_size=None):
         if batch_size is None and self.states is None:
             raise ValueError("If states are still None batch_size is required")
         if batch_size is None:
             batch_size = tf.shape(self.state)[0]
-        self.states = tf.zeros(shape=(batch_size, self.rnn_units), dtpye=tf.float32)
+        self.states = tf.zeros(shape=(batch_size, self.rnn_units), dtype=tf.float32)
 
 
 @dataclass
@@ -213,22 +221,12 @@ class HyperNetworks:
     policy: HyperNetwork
 
 
-@dataclass
-class RNPConfig:
-    scale_offset: int
-    sampling_grid: tf.Tensor
-
-
-def build_hypernetworks(hparams: RNPHParams,
-                         hyper_decoders_units=None) -> HyperNetworks:
-    if hparams.hyper_decoders_units is None:
-        hyper_decoders_units = [64, 64]
-    else:
-        hyper_decoders_units = hparams
+def build_hypernetworks(hparams: RNPHParams) -> HyperNetworks:
+    hyper_decoders_units = hparams.hyper_decoders_units
 
     # State transition
     h_state_output_size, h_state_params = compute_hypernetwork_params(
-        hparams, decoder_size=hparams.x_size, 
+        hparams, decoder_size=hparams.x_dec_size, 
         transition_rnn_units=hparams.embedding_size, emb_zero_size=hparams.embedding_size
     )
     
@@ -238,7 +236,7 @@ def build_hypernetworks(hparams: RNPHParams,
                                           )
 
     parameterized_state_models = build_parametrized_models(hparams, h_state_params, 
-                                                           decoder_size=hparams.x_size,
+                                                           decoder_size=hparams.x_dec_size,
                                                            rnn_units=hparams.embedding_size)
     
     state_hypernetworks = HyperNetwork(*(h_state, *parameterized_state_models, hparams.embedding_size))
@@ -248,16 +246,88 @@ def build_hypernetworks(hparams: RNPHParams,
         transition_rnn_units=hparams.action_embedding_size, emb_zero_size=hparams.action_embedding_size
     )
 
-
     h_policy = build_hypernetwork_decoder(hyper_decoders_units, hparams.embedding_size,
                                           output_size=h_policy_output_size,
                                           splits=h_policy_params
                                           )
 
     parameterized_policy_models = build_parametrized_models(hparams, h_policy_params,
-                                                          decoder_size=NUM_AFFINE_TRANSFORMATION_PARAMETERS,
-                                                          rnn_units=hparams.action_embedding_size)
+                                                            decoder_size=NUM_AFFINE_TRANSFORMATION_PARAMETERS,
+                                                            rnn_units=hparams.action_embedding_size)
     policy_hypernetworks = HyperNetwork(*(h_policy, *parameterized_policy_models, hparams.action_embedding_size))
 
     return HyperNetworks(state_hypernetworks, policy_hypernetworks)
 
+
+def parametrized_hypernetwork_step(hyper: HyperNetwork, inputs, params: tuple):
+    z, za = inputs
+    enc_dense1_params, enc_dense2_params, dec_dense1_params, dec_dense2_params, rnn_params = params
+
+    next_emb, hyper.states = hyper.rnn(
+        [
+            hyper.encoder(
+                [z, za, enc_dense1_params, enc_dense2_params]
+            ),
+            rnn_params,
+            hyper.states
+        ]
+    )
+
+    dec_out = hyper.decoder(
+        [next_emb, dec_dense1_params, dec_dense2_params]
+    )
+
+    return next_emb, dec_out
+
+
+class RNPDecoder(keras.Model):
+    def __init__(self, hparams: RNPHParams, **kwargs):
+        super().__init__(**kwargs)
+        self.hparams = hparams
+
+        self.hypernetworks = build_hypernetworks(self.hparams)
+        # TODO: change Hypernetwork state and policy class to a keras.Model weights for tracking!
+        self.state_hyper = self.hypernetworks.state
+        self.policy_hyper = self.hypernetworks.policy
+    
+        height, width, _ = self.hparams.img_shape
+        self.sampling_grid = (height, width)
+
+        self.reshape_out = layers.Reshape((28, 28, 1))
+
+
+    def call(self, inputs):
+        x, z = inputs
+        batch_size = tf.shape(x)[0]
+        self.state_hyper.reset_state(batch_size)
+        self.policy_hyper.reset_state(batch_size)
+
+        out = self.rnp_decoder(x, z, self.hparams.levels)
+        return out
+
+    def rnp_decoder(self, x, z, level):
+        *state_generated_params, z0 = self.hypernetworks.state.hypernetwork(z)
+        *policy_generated_params, za0 = self.hypernetworks.policy.hypernetwork(z)
+        out = tf.zeros_like(x)
+        for _ in range(self.hparams.sequence_length):
+            (z0, za0), (x_hat, a), x_patch = self.step(
+                x,
+                inputs=(z0, za0), 
+                gen_params=(state_generated_params, policy_generated_params)
+            )
+            if level > 0:
+                out_ = self.rnp_decoder(x_patch, z, level - 1)
+                out += sample(out_, a, self.sampling_grid)
+            else:
+                out += sample(self.reshape_out(x_hat), a, self.sampling_grid)
+        return out
+
+    def step(self, x, inputs, gen_params):
+        hyper = self.hypernetworks
+        state_generated_params, policy_generated_params = gen_params
+        next_z, x_hat = parametrized_hypernetwork_step(hyper.state, inputs, state_generated_params)
+        next_za, a = parametrized_hypernetwork_step(hyper.policy, inputs, policy_generated_params)
+        # Sample the original image with the current action a, it is passed to deeper layers
+        #  during recursion, useful too for generating a patch level auxiliar loss.
+        x_patch = tf.stop_gradient(inverse_sampling(x, a, self.sampling_grid))
+        return (next_z, next_za), (x_hat, a), x_patch
