@@ -72,19 +72,24 @@ def bilinear_interpolate(image, x_coords, y_coords):
     return interpolated
 
 
-def affine_transform(image, transform_matrix):
+def affine_transform(image, transform_matrix, sample_grid: tuple[int, int] | None=None):
     """Applies an affine transformation to images using bilinear interpolation.
     
     Args:
         image: Tensor of shape (batch_size, height, width, channels)
         transform_matrix: Tensor of shape (batch_size, 2, 3) containing affine transform matrices
-        
+        sample_grid: Optional tuple of (height, width) to use as sampling grid dimensions.
+            If provided, these dimensions will be used to create the sampling grid instead
+            of using the input image dimensions. This allows generating transformed images
+            of different shapes than the input.
     Returns:
         Transformed image tensor of same shape as input
     """
     shape = tf.shape(image)
     batch_size, height, width = shape[0], shape[1], shape[2]
-    
+    if sample_grid is not None:
+        height, width = shape[1], shape[2]
+
     x = tf.range(width, dtype=tf.float32)
     y = tf.range(height, dtype=tf.float32)
     x_t, y_t = tf.meshgrid(x, y)
