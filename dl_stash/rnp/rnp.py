@@ -42,7 +42,7 @@ def get_simple_encoder(input_shape: tuple[int, int, int]) -> keras.Model:
     return encoder_backbone
 
 
-def get_encoder(backbone: keras.Model, input_shape: tuple[int, ...], embedding_size: int):
+def get_encoder(backbone: keras.Model, input_shape: tuple[int, ...], embedding_size: int, **kwargs):
     in_ = layers.Input(shape=input_shape)
     z_encoder = backbone(in_)
 
@@ -51,7 +51,7 @@ def get_encoder(backbone: keras.Model, input_shape: tuple[int, ...], embedding_s
 
     z_k = SampleGaussian()([z_mu, z_logvar])
 
-    encoder = keras.Model(inputs=in_, outputs=z_k)
+    encoder = keras.Model(inputs=in_, outputs=z_k, **kwargs)
     return encoder
 
 
@@ -205,32 +205,18 @@ class HyperNetwork(keras.Model):
         self.decoder = decoder
         self.rnn = rnn
         self.rnn_units = rnn_units
-        self.states_var = None
         self.built = True
 
-    def reset_state(self, batch_size=None):
-        if batch_size is None and self.states_var is None:
-            raise ValueError("If states are still None batch_size is required")
-        if batch_size is None:
-            batch_size = tf.shape(self.states_var.read_value())[0]
-        
-        # Create a proper TensorFlow Variable for states
-        if self.states_var is not None:
-            self.states_var.assign(tf.zeros(shape=(batch_size, self.rnn_units), dtype=tf.float32))
-        else:
-            self.states_var = tf.Variable(
-                tf.zeros(shape=(batch_size, self.rnn_units), dtype=tf.float32),
-                trainable=False,
-                name=f"{self.name}_states"
-            )
+    @tf.function
+    def parametrized_hypernetwork_step(self, inputs, params, states):
+        z, za = inputs
+        enc_dense1_params, enc_dense2_params, dec_dense1_params, dec_dense2_params, rnn_params = params
 
-    @property
-    def states(self):
-        return self.states_var.read_value()
-    
-    @states.setter
-    def states(self, value):
-        self.states_var.assign(value)
+        encoder_output = self.encoder([z, za, enc_dense1_params, enc_dense2_params])
+        next_emb, next_states = self.rnn([encoder_output, rnn_params, states])
+        dec_out = self.decoder([next_emb, dec_dense1_params, dec_dense2_params])
+
+        return next_emb, dec_out, next_states
 
     def call(self, z):
         return self.hypernetwork(z)
@@ -285,22 +271,6 @@ def build_hypernetworks(hparams: RNPHParams) -> tuple[HyperNetwork, HyperNetwork
     return state_hypernetworks, policy_hypernetworks
 
 
-@tf.function
-def parametrized_hypernetwork_step(hyper: HyperNetwork, inputs, params: tuple):
-    z, za = inputs
-    enc_dense1_params, enc_dense2_params, dec_dense1_params, dec_dense2_params, rnn_params = params
-
-    encoder_output = hyper.encoder([z, za, enc_dense1_params, enc_dense2_params])
-    next_emb, next_states = hyper.rnn([encoder_output, rnn_params, hyper.states])
-    
-    # Update states using the Variable
-    hyper.states = next_states
-
-    dec_out = hyper.decoder([next_emb, dec_dense1_params, dec_dense2_params])
-
-    return next_emb, dec_out
-
-
 class RNPDecoder(keras.Model):
     def __init__(self, hparams: RNPHParams, **kwargs):
         super().__init__(**kwargs)
@@ -311,41 +281,73 @@ class RNPDecoder(keras.Model):
         height, width, _ = self.hparams.img_shape
         self.sampling_grid = (height, width)
         self.reshape_out = layers.Reshape(self.hparams.decoder_state_image_shape)
-
+    
+    def compute_output_shape(self, input_shape):
+        # Input is [x, z] where x has the same shape as output
+        return input_shape[0]
+    
     def call(self, inputs):
         x, z = inputs
         batch_size = tf.shape(x)[0]
-        self.state_hyper.reset_state(batch_size)
-        self.policy_hyper.reset_state(batch_size)
-
-        out = self.rnp_decoder(x, z, self.hparams.levels)
+        out = self.rnp_decoder(x, z, self.hparams.levels, batch_size)
         return out
 
     @tf.function
-    def rnp_decoder(self, x, z, level):
+    def rnp_decoder(self, x, z, level, batch_size):
+        # Remove @tf.function decorator to avoid issues with variable creation
         *state_generated_params, z0 = self.state_hyper(z)
         *policy_generated_params, za0 = self.policy_hyper(z)
+        rnn_states = self.initial_rnn_steps(batch_size)
         out = tf.zeros_like(x)
         for _ in range(self.hparams.sequence_length):
-            (z0, za0), (x_hat, a), x_patch = self.step(
+            (z0, za0), (x_hat, a), x_patch, rnn_states = self.step(
                 x,
                 inputs=(z0, za0), 
-                gen_params=(state_generated_params, policy_generated_params)
+                gen_params=(state_generated_params, policy_generated_params),
+                rnn_states=rnn_states
             )
             if level > 0:
-                out_ = self.rnp_decoder(x_patch, z, level - 1)
+                out_ = self.rnp_decoder(x_patch, z, level - 1, batch_size)
                 out += sample(out_, a, self.sampling_grid)
             else:
                 out += sample(self.reshape_out(x_hat), a, self.sampling_grid)
         return out
 
+    def initial_rnn_steps(self, batch_size):
+        return (
+            tf.zeros(shape=(batch_size, self.state_hyper.rnn_units), dtype=tf.float32),
+            tf.zeros(shape=(batch_size, self.policy_hyper.rnn_units), dtype=tf.float32)
+        )
+
     @tf.function
-    def step(self, x, inputs, gen_params):
-        hyper = self.hypernetworks
+    def step(self, x, inputs, gen_params, rnn_states):
+        state_rnn_states, policy_rnn_states = rnn_states
+        # Remove @tf.function decorator here as well
         state_generated_params, policy_generated_params = gen_params
-        next_z, x_hat = parametrized_hypernetwork_step(hyper.state, inputs, state_generated_params)
-        next_za, a = parametrized_hypernetwork_step(hyper.policy, inputs, policy_generated_params)
+        next_z, x_hat, state_rnn_states = self.state_hyper.parametrized_hypernetwork_step(
+            inputs, state_generated_params, state_rnn_states
+        )
+        next_za, a, policy_rnn_states = self.policy_hyper.parametrized_hypernetwork_step(
+            inputs, policy_generated_params, policy_rnn_states
+        )    
         # Sample the original image with the current action a, it is passed to deeper layers
         #  during recursion, useful too for generating a patch level auxiliar loss.
         x_patch = tf.stop_gradient(inverse_sampling(x, a, self.sampling_grid))
-        return (next_z, next_za), (x_hat, a), x_patch
+        return (next_z, next_za), (x_hat, a), x_patch, (state_rnn_states, policy_rnn_states)
+
+
+def get_rnp_autoencoder(hparams: RNPHParams):
+    encoder = get_encoder(
+        get_simple_encoder(hparams.img_shape),
+        hparams.img_shape,
+        hparams.embedding_size,
+        name="encoder"
+    )
+    decoder = RNPDecoder(hparams, name="rnp_decoder")
+    in_ = layers.Input(shape=hparams.img_shape, dtype=tf.float32)
+
+    z = encoder(in_)
+    y = decoder([in_, z])
+
+    return keras.Model(in_, y)
+
