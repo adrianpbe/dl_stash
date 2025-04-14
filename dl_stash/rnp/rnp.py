@@ -51,7 +51,7 @@ def get_encoder(backbone: keras.Model, input_shape: tuple[int, ...], embedding_s
 
     z_k = SampleGaussian()([z_mu, z_logvar])
 
-    encoder = keras.Model(inputs=in_, outputs=z_k, **kwargs)
+    encoder = keras.Model(inputs=in_, outputs=[z_k, z_mu, z_logvar], **kwargs)
     return encoder
 
 
@@ -336,18 +336,55 @@ class RNPDecoder(keras.Model):
         return (next_z, next_za), (x_hat, a), x_patch, (state_rnn_states, policy_rnn_states)
 
 
-def get_rnp_autoencoder(hparams: RNPHParams):
-    encoder = get_encoder(
-        get_simple_encoder(hparams.img_shape),
-        hparams.img_shape,
-        hparams.embedding_size,
-        name="encoder"
-    )
-    decoder = RNPDecoder(hparams, name="rnp_decoder")
-    in_ = layers.Input(shape=hparams.img_shape, dtype=tf.float32)
+class RNPAutoEncoder(keras.Model):
+    def __init__(self, hparams: RNPHParams, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = get_encoder(
+            get_simple_encoder(hparams.img_shape),
+            hparams.img_shape,
+            hparams.embedding_size,
+            name="encoder"
+        )
+        self.decoder = RNPDecoder(hparams, name="rnp_decoder")
+        self.total_loss_tracker = keras.metrics.Mean(name="total_loss")
+        self.reconstruction_loss_tracker = keras.metrics.Mean(
+            name="reconstruction_loss"
+        )
+        self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
 
-    z = encoder(in_)
-    y = decoder([in_, z])
+    def train_step(self, data):
+        with tf.GradientTape() as tape:
+            z_k, z_mu, z_logvar = self.encoder(data)
+            reconstruction = self.decoder([data, z_k])
+            reconstruction_loss = tf.math.reduce_mean(
+                tf.math.reduce_sum(
+                    tf.math.square(data - reconstruction),
+                    axis=(1, 2, 3)
+                )
+            )
+            kl_loss = -0.5 * (1 + z_logvar - tf.math.square(z_mu) - tf.math.exp(z_logvar))
+            kl_loss = tf.math.reduce_sum(tf.math.reduce_sum(kl_loss, axis=1))
+            total_loss = reconstruction_loss + kl_loss
+        grads = tape.gradient(total_loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.kl_loss_tracker.update_state(kl_loss)
+        return {
+            "loss": self.total_loss_tracker.result(),
+            "reconstruction_loss": self.reconstruction_loss_tracker.result(),
+            "kl_loss": self.kl_loss_tracker.result(),
+        }
 
-    return keras.Model(in_, y)
+    @property
+    def metrics(self):
+        return [
+            self.total_loss_tracker,
+            self.reconstruction_loss_tracker,
+            self.kl_loss_tracker,
+        ]
 
+    def call(self, x):
+        z_k, z_mu, z_logvar = self.encoder(x)
+        y = self.decoder([x, z_k])
+        return y
