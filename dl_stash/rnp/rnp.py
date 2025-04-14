@@ -322,7 +322,6 @@ class RNPDecoder(keras.Model):
     @tf.function
     def step(self, x, inputs, gen_params, rnn_states):
         state_rnn_states, policy_rnn_states = rnn_states
-        # Remove @tf.function decorator here as well
         state_generated_params, policy_generated_params = gen_params
         next_z, x_hat, state_rnn_states = self.state_hyper.parametrized_hypernetwork_step(
             inputs, state_generated_params, state_rnn_states
@@ -339,6 +338,7 @@ class RNPDecoder(keras.Model):
 class RNPAutoEncoder(keras.Model):
     def __init__(self, hparams: RNPHParams, **kwargs):
         super().__init__(**kwargs)
+        self.hparams = hparams
         self.encoder = get_encoder(
             get_simple_encoder(hparams.img_shape),
             hparams.img_shape,
@@ -351,7 +351,24 @@ class RNPAutoEncoder(keras.Model):
             name="reconstruction_loss"
         )
         self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
+        
+        # # Programmatically wrap the train step, this is done
+        # #  to wrap the `train_step` method in a way that tf.function
+        # #  can take into account the input shape of the model (from self.hparams).
+        # #  This would be impossible if simply using a @tf.function decorator!
+        # self.train_step = tf.function(
+        #     self.train_step,
+        #     input_signature=[
+        #         tf.TensorSpec(shape=(None,) + self.hparams.img_shape)
+        #     ],
+        #     reduce_retracing=True,
+        # )
 
+    def  build(self, input_shape):
+        super().build(input_shape)
+        self.built = True
+
+    @tf.function(reduce_retracing=True)
     def train_step(self, data):
         with tf.GradientTape() as tape:
             z_k, z_mu, z_logvar = self.encoder(data)
@@ -367,6 +384,29 @@ class RNPAutoEncoder(keras.Model):
             total_loss = reconstruction_loss + kl_loss
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.kl_loss_tracker.update_state(kl_loss)
+        return {
+            "loss": self.total_loss_tracker.result(),
+            "reconstruction_loss": self.reconstruction_loss_tracker.result(),
+            "kl_loss": self.kl_loss_tracker.result(),
+        }
+
+    @tf.function(reduce_retracing=True)
+    def test_step(self, data):
+        z_k, z_mu, z_logvar = self.encoder(data)
+        reconstruction = self.decoder([data, z_k])
+        reconstruction_loss = tf.math.reduce_mean(
+            tf.math.reduce_sum(
+                tf.math.square(data - reconstruction),
+                axis=(1, 2, 3)
+            )
+        )
+        kl_loss = -0.5 * (1 + z_logvar - tf.math.square(z_mu) - tf.math.exp(z_logvar))
+        kl_loss = tf.math.reduce_sum(tf.math.reduce_sum(kl_loss, axis=1))
+        total_loss = reconstruction_loss + kl_loss
+        
         self.total_loss_tracker.update_state(total_loss)
         self.reconstruction_loss_tracker.update_state(reconstruction_loss)
         self.kl_loss_tracker.update_state(kl_loss)
