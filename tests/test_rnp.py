@@ -27,8 +27,8 @@ def test_rnp_decoder_different_batch_size():
     assert True
 
 
-def test_get_rnp_autoencoder():
+def test_rnp_auto_encoder_is_built():
     hparams = rnp.RNPHParams((28, 28, 1), sequence_length=4, levels=2)
-    model =  rnp.get_rnp_autoencoder(hparams)
+    model =  rnp.RNPAutoEncoder(hparams)
     assert True
 
