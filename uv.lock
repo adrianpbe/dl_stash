@@ -517,6 +517,7 @@ dependencies = [
     { name = "tensorboard-plugin-profile" },
     { name = "tensorflow", extra = ["and-cuda"] },
     { name = "tensorflow-datasets" },
+    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -536,6 +537,7 @@ requires-dist = [
     { name = "tensorboard-plugin-profile", specifier = ">=2.19.3" },
     { name = "tensorflow", extras = ["and-cuda"], specifier = "==2.16.2" },
     { name = "tensorflow-datasets", specifier = ">=4.9.8" },
+    { name = "tqdm", specifier = ">=4.67.1" },
 ]
 
 [package.metadata.requires-dev]

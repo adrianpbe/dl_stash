@@ -13,6 +13,7 @@ dependencies = [
     "tensorboard-plugin-profile>=2.19.3",
     "tensorflow-datasets>=4.9.8",
     "tensorflow[and-cuda]==2.16.2",
+    "tqdm>=4.67.1",
 ]
 
 [project.optional-dependencies]
