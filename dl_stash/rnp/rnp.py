@@ -8,10 +8,31 @@ from tensorflow import keras
 from  tensorflow.keras import layers
 
 from dl_stash import hyper
-from dl_stash.rnp.image import sample, inverse_sampling
+import dl_stash.rnp.image
 
 
-NUM_AFFINE_TRANSFORMATION_PARAMETERS = 4
+
+NUM_AFFINE_TRANSFORMATION_PARAMETERS = 6
+
+
+def sample_patch(image, params, sampling_grid, scale_offset: float):
+    
+    default_scale_offset = tf.convert_to_tensor([[0, 0, 0, 0, 1, 1]], dtype=tf.float32)
+    offset = scale_offset * default_scale_offset
+    
+    params = params + offset
+
+    return dl_stash.rnp.image.sample(image, params, sampling_grid)
+
+
+def inverse_sample_patch(image, params, sampling_grid, scale_offset: float):
+
+    default_scale_offset = tf.convert_to_tensor([[0, 0, 0, 0, 1, 1]], dtype=tf.float32)
+    offset = scale_offset * default_scale_offset
+    
+    params = params + offset
+
+    return dl_stash.rnp.image.inverse_sampling(image, params, sampling_grid)
 
 
 class SampleGaussian(layers.Layer):
@@ -308,9 +329,9 @@ class RNPDecoder(keras.Model):
             )
             if level > 0:
                 out_ = self.rnp_decoder(x_patch, z, level - 1, batch_size)
-                out += sample(out_, a, self.sampling_grid)
+                out += sample_patch(out_, a, self.sampling_grid, self.hparams.scale_offset)
             else:
-                out += sample(self.reshape_out(x_hat), a, self.sampling_grid)
+                out += sample_patch(self.reshape_out(x_hat), a, self.sampling_grid, self.hparams.scale_offset)
         return out
 
     def initial_rnn_steps(self, batch_size):
@@ -331,7 +352,7 @@ class RNPDecoder(keras.Model):
         )    
         # Sample the original image with the current action a, it is passed to deeper layers
         #  during recursion, useful too for generating a patch level auxiliar loss.
-        x_patch = tf.stop_gradient(inverse_sampling(x, a, self.sampling_grid))
+        x_patch = tf.stop_gradient(inverse_sample_patch(x, a, self.sampling_grid, self.hparams.scale_offset))
         return (next_z, next_za), (x_hat, a), x_patch, (state_rnn_states, policy_rnn_states)
 
 

@@ -28,13 +28,14 @@ def get_rotation_matrix(angles):
     return tf.reshape(matrices, [-1, 2, 2])
 
 
-def get_affine_transformation_matrix(rotation, shear, offset, images):
-    """Creates affine transformation matrices by composing rotation, shear and offset.
+def get_affine_transformation_matrix(rotation, shear, offset, scale, images):
+    """Creates affine transformation matrices by composing rotation, shear, offset and scale.
     
     Args:
         rotation: Tensor of shape (batch_size, 1) containing rotation angles in radians
         shear: Tensor of shape (batch_size, 1) containing shear factors 
         offset: Tensor of shape (batch_size, 2) containing x,y translation offsets
+        scale: Tensor of shape (batch_size, 2) containing x,y scale factors
         images: Tensor with images (batch_size, height, width, channels)
         
     Returns:
@@ -53,8 +54,19 @@ def get_affine_transformation_matrix(rotation, shear, offset, images):
     ], axis=1)
     S = tf.reshape(S, [-1, 2, 2])
     
-    # Combine first rotation and then shear (batch_size, 2, 2)
-    transform = tf.matmul(S, R)
+    # Create scale matrices (batch_size, 2, 2)
+    # [[scale_x, 0],
+    #  [0, scale_y]]
+    scale_x = scale[:, 0:1]
+    scale_y = scale[:, 1:2]
+    scale_matrix = tf.concat([
+        tf.concat([scale_x, zeros], axis=1),
+        tf.concat([zeros, scale_y], axis=1)
+    ], axis=1)
+    scale_matrix = tf.reshape(scale_matrix, [-1, 2, 2])
+    
+    # Combine first rotation, then shear, then scale (batch_size, 2, 2)
+    transform = tf.matmul(scale_matrix, tf.matmul(S, R))
 
     image_shape = tf.shape(images)
     batch_size = image_shape[0]
@@ -94,19 +106,20 @@ def make_homogeneous_transform(A):
     return tf.concat([A, last_row], axis=1)
 
 
-def get_inverse_affine_transformation_matrix(rotation, shear, offset, images):
-    """Creates inverse affine transformation matrices by composing rotation, shear and offset in reverse order.
+def get_inverse_affine_transformation_matrix(rotation, shear, offset, scale, images):
+    """Creates inverse affine transformation matrices by composing rotation, shear, offset and scale in reverse order.
     
     Args:
         rotation: Tensor of shape (batch_size, 1) containing rotation angles in radians
         shear: Tensor of shape (batch_size, 1) containing shear factors 
         offset: Tensor of shape (batch_size, 2) containing x,y translation offsets
+        scale: Tensor of shape (batch_size, 2) containing x,y scale factors
         images: Tensor with images (batch_size, height, width, channels)
         
     Returns:
         Tensor of shape (batch_size, 2, 3) containing inverse affine transformation matrices
     """
-    A = get_affine_transformation_matrix(-rotation, -shear, tf.zeros_like(offset), images)
+    A = get_affine_transformation_matrix(-rotation, -shear, tf.zeros_like(offset), 1.0/(scale + 1e-7), images)
     batch_size = tf.shape(rotation)[0]
     identity = tf.tile(
         tf.expand_dims(tf.eye(2), 0), [batch_size, 1, 1]
@@ -122,15 +135,16 @@ def extract_affine_params(image, params):
     
     Args:
         image: Tensor of shape (batch_size, height, width, channels)
-        params: Tensor of shape (batch_size, 4) containing [rotation, shear, offset_x, offset_y]
-            where rotation is in radians, shear is a factor, and offsets are normalized 
-            between -1 and 1 relative to image dimensions.
+        params: Tensor of shape (batch_size, 6) containing [rotation, shear, offset_x, offset_y, scale_x, scale_y]
+            where rotation is in radians, shear is a factor, offsets are normalized 
+            between -1 and 1 relative to image dimensions, and scale factors are positive values.
             
     Returns:
-        Tuple of (rotation, shear, normalized_offset) where:
+        Tuple of (rotation, shear, normalized_offset, scale) where:
             - rotation: Tensor of shape (batch_size, 1) containing rotation angles in radians
             - shear: Tensor of shape (batch_size, 1) containing shear factors
             - normalized_offset: Tensor of shape (batch_size, 2) containing x,y offsets in pixels
+            - scale: Tensor of shape (batch_size, 2) containing x,y scale factors
     """
     height, width = tf.shape(image)[1], tf.shape(image)[2]
     
@@ -138,6 +152,7 @@ def extract_affine_params(image, params):
     rotation = params[:, 0:1]
     shear = params[:, 1:2]
     offset = params[:, 2:4]
+    scale = params[:, 4:6]
     
     # Normalize offset by image dimensions
     # offset_x: -1 corresponds to -width, offset_y: 1 corresponds to height
@@ -146,7 +161,7 @@ def extract_affine_params(image, params):
         offset[:, 1] * tf.cast(height, dtype=offset.dtype)
     ], axis=1)
     
-    return rotation,shear,normalized_offset
+    return rotation, shear, normalized_offset, scale
 
 
 def sample(image, params, sampling_grid):
@@ -154,17 +169,17 @@ def sample(image, params, sampling_grid):
     
     Args:
         image: Tensor of shape (batch_size, height, width, channels)
-        params: Tensor of shape (batch_size, 4) containing [rotation, shear, offset_x, offset_y]
+        params: Tensor of shape (batch_size, 6) containing [rotation, shear, offset_x, offset_y, scale_x, scale_y]
         sampling_grid: Tuple of (height, width) for the sampling grid dimensions
         
     Returns:
         Transformed image tensor of shape (batch_size, sampling_grid[0], sampling_grid[1], channels)
     """
-    rotation, shear, normalized_offset = extract_affine_params(image, params)
+    rotation, shear, normalized_offset, scale = extract_affine_params(image, params)
 
     # Get the transformation matrix 
     transform_matrix = get_affine_transformation_matrix(
-        rotation, shear, normalized_offset, image
+        rotation, shear, normalized_offset, scale, image
     )
 
     transformed_image = dl_stash.image.affine_transform(
@@ -181,17 +196,17 @@ def inverse_sampling(image, params, sampling_grid):
     
     Args:
         image: Tensor of shape (batch_size, height, width, channels)
-        params: Tensor of shape (batch_size, 4) containing [rotation, shear, offset_x, offset_y]
+        params: Tensor of shape (batch_size, 6) containing [rotation, shear, offset_x, offset_y, scale_x, scale_y]
         sampling_grid: Tuple of (height, width) for the sampling grid dimensions
         
     Returns:
         Transformed image tensor of shape (batch_size, sampling_grid[0], sampling_grid[1], channels)
     """
-    rotation, shear, normalized_offset = extract_affine_params(image, params)
+    rotation, shear, normalized_offset, scale = extract_affine_params(image, params)
 
     # Get the transformation matrix 
     transform_matrix = get_inverse_affine_transformation_matrix(
-        rotation, shear, normalized_offset, image
+        rotation, shear, normalized_offset, scale, image
     )
 
     transformed_image = dl_stash.image.affine_transform(
