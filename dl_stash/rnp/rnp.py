@@ -18,8 +18,8 @@ NUM_AFFINE_TRANSFORMATION_PARAMETERS = 6
 def sample_patch(image, params, sampling_grid, scale_offset: float):
     
     default_scale_offset = tf.convert_to_tensor([[0, 0, 0, 0, 1, 1]], dtype=tf.float32)
-    offset = scale_offset * default_scale_offset
-    
+    offset = default_scale_offset + scale_offset * tf.convert_to_tensor([[0, 0, 0, 0, 1, 1]], dtype=tf.float32)
+
     params = params + offset
 
     return dl_stash.rnp.image.sample(image, params, sampling_grid)
@@ -85,7 +85,8 @@ class RNPHParams:
     parametrized_encoders_units: int=32
     parametrized_decoders_units: int=32
     sequence_length: int=8
-    scale_offset: float=1.0 # TODO: check how it is used
+    scale_offset: float=1.6
+    beta: float=0.1
     decoder_state_image_shape: tuple[int, int, int] | None = None
     hyper_decoders_units: list[int] = field(default_factory=lambda:  [64, 64])
 
@@ -402,7 +403,7 @@ class RNPAutoEncoder(keras.Model):
             )
             kl_loss = -0.5 * (1 + z_logvar - tf.math.square(z_mu) - tf.math.exp(z_logvar))
             kl_loss = tf.math.reduce_sum(tf.math.reduce_sum(kl_loss, axis=1))
-            total_loss = reconstruction_loss + kl_loss
+            total_loss = reconstruction_loss + self.hparams.beta * kl_loss
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
         self.total_loss_tracker.update_state(total_loss)
