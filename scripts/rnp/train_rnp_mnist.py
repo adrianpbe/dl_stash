@@ -1,8 +1,12 @@
 import tensorflow as tf
 from tensorflow import keras
 import tensorflow_datasets as tfds
+from tqdm import tqdm
 
 from dl_stash.rnp.rnp import RNPHParams, RNPAutoEncoder
+
+
+# tf.config.set_visible_devices([], 'GPU')
 
 
 def preprocess_data(x):
@@ -14,18 +18,20 @@ def preprocess_data(x):
 
 def main():
     # Set hyperparameters
+    # BATCH_SIZE = 32
     BATCH_SIZE = 256
-    epochs = 4
+    epochs = 50
 
     hparams = RNPHParams(
         img_shape=(28, 28, 1),  # MNIST image shape
-        embedding_size=32,
-        action_embedding_size=32,
+        embedding_size=16,
+        action_embedding_size=16,
         levels=2,  # Number of recursive levels
-        sequence_length=2,  # Number of steps in the sequence
-        parametrized_encoders_units=32,
-        parametrized_decoders_units=32,
-        hyper_decoders_units=[64, 64]
+        sequence_length=3,  # Number of steps in the sequence
+        parametrized_encoders_units=64,
+        parametrized_decoders_units=64,
+        hyper_decoders_units=[64, 64, 64],
+        scale_offset=0
     )
 
     mnist = tfds.image_classification.MNIST()
@@ -33,6 +39,7 @@ def main():
 
     train_ds = (
         mnist_ds["train"]
+        .filter(lambda x: (x["label"] == 0 or x["label"] == 1))
         .map(preprocess_data)
         .batch(BATCH_SIZE)
         .prefetch(tf.data.AUTOTUNE)
@@ -40,6 +47,7 @@ def main():
 
     test_ds = (
         mnist_ds["test"]
+        .filter(lambda x: (x["label"] == 0 or x["label"] == 1))
         .map(preprocess_data)
         .batch(BATCH_SIZE)
         .prefetch(tf.data.AUTOTUNE)
@@ -63,12 +71,14 @@ def main():
     history = model.fit(train_ds, epochs=epochs, callbacks=callbacks, validation_data=test_ds)
 
     # Save the model
-    model.save_weights("rnp_mnist.weights.h5")
+    model.save_weights("rnp_mnist_zero_or_one.weights.h5")
 
     # Print final metrics
     print("\nTraining completed!")
-    print(f"Final training loss: {history.history['loss'][-1]:.4f}")
-    print(f"Final validation loss: {history.history['val_loss'][-1]:.4f}")
+    if not isinstance(history, dict):
+        history= history.history
+    print(f"Final training loss: {history['loss'][-1]:.4f}")
+    print(f"Final validation loss: {history['val_loss'][-1]:.4f}")
 
 
 if __name__ == "__main__":

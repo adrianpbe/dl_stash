@@ -82,15 +82,16 @@ def profile_train_loop(hparams: rnp.RNPHParams, batch_size: int, num_steps: int)
     autoencoder.compile(optimizer=keras.optimizers.Adam())
     im_ds = get_ds(batch_size)
 
-    iterds = iter(im_ds.take(num_steps))
+    iterds = iter(im_ds.take(num_steps + 1))
 
     # # Take one batch of data 
     # batch_images = next(iterds)
 
     # input_data = batch_images
     # # Warmup
-    # print("warming up")
-    # output = autoencoder.train_step(input_data) 
+    print("warming up")
+    train_data = next(iterds)
+    _ = autoencoder.train_step(train_data)
 
     # # Profiling data
     # batch_images = next(iterds)
@@ -109,6 +110,6 @@ def profile_train_loop(hparams: rnp.RNPHParams, batch_size: int, num_steps: int)
     tf.profiler.experimental.stop()
 
 if __name__ == "__main__":
-    batch_size = 32
+    batch_size = 128
     hparams = rnp.RNPHParams((28, 28, 1), sequence_length=4, levels=2)
     profile_train_loop(hparams, batch_size, 4)
