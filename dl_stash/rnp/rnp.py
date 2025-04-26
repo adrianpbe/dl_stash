@@ -303,6 +303,8 @@ class RNPDecoder(keras.Model):
         height, width, _ = self.hparams.img_shape
         self.sampling_grid = (height, width)
         self.reshape_out = layers.Reshape(self.hparams.decoder_state_image_shape)
+        if self.hparams.zk_shortcut:
+            self.shortcut_add = layers.Add()
     
     def compute_output_shape(self, input_shape):
         # Input is [x, z] where x has the same shape as output
@@ -329,7 +331,11 @@ class RNPDecoder(keras.Model):
                 rnn_states=rnn_states
             )
             if level > 0:
-                out_ = self.rnp_decoder(x_patch, z, level - 1, batch_size)
+                if self.hparams.zk_shortcut:
+                    z0rec = self.shortcut_add([z, z0])
+                else:
+                    z0rec = z0
+                out_ = self.rnp_decoder(x_patch, z0rec, level - 1, batch_size)
                 out += sample_patch(out_, a, self.sampling_grid, self.hparams.scale_offset)
             else:
                 out += sample_patch(self.reshape_out(x_hat), a, self.sampling_grid, self.hparams.scale_offset)
