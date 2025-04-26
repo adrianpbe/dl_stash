@@ -109,9 +109,11 @@ class RNPHParams:
     sequence_length: int=8
     scale_offset: float=1.6
     beta: float=0.1
+    lambda_: float=0.001
     decoder_state_image_shape: tuple[int, int, int] | None = None
     hyper_decoders_units: list[int] = field(default_factory=lambda:  [64, 64])
     zk_shortcut: bool = False
+    norm_hyper: bool = True
 
     def __post_init__(self):
         if self.decoder_state_image_shape is None:
@@ -166,16 +168,21 @@ def compute_h_policy_params(hparams: RNPHParams):
     )
 
 
-def build_hypernetwork_decoder(units: list[int], embedding_size: int, output_size: int, splits: tuple[int, ...], name):
+def build_hypernetwork_decoder(units: list[int], embedding_size: int, output_size: int, splits: tuple[int, ...], name,
+                               normalized: bool):
+    if normalized:
+        get_block = lambda x: [
+                        layers.Dense(u),
+                        layers.LayerNormalization(),
+                        layers.Activation("elu")
+                    ]
+    else:
+        get_block = lambda x: [layers.Dense(u, activation="elu")]
+
     middle_layers = []
     for u in units:
-        middle_layers.extend(
-            [
-                layers.Dense(u),
-                layers.LayerNormalization(),
-                layers.Activation("elu")
-            ]
-        )
+        middle_layers.extend(get_block(u))
+
     h_backbone = keras.Sequential(
         [
             layers.Input(shape=(embedding_size,), dtype=tf.float32),
@@ -292,7 +299,8 @@ def build_hypernetworks(hparams: RNPHParams) -> tuple[HyperNetwork, HyperNetwork
     h_state = build_hypernetwork_decoder(hyper_decoders_units, hparams.embedding_size,
                                           output_size=h_state_output_size,
                                           splits=h_state_params,
-                                          name="H_state"
+                                          name="H_state",
+                                          normalized=hparams.norm_hyper
                                           )
 
     parameterized_state_models = build_parametrized_models(hparams, h_state_params, 
@@ -311,7 +319,8 @@ def build_hypernetworks(hparams: RNPHParams) -> tuple[HyperNetwork, HyperNetwork
     h_policy = build_hypernetwork_decoder(hyper_decoders_units, hparams.embedding_size,
                                           output_size=h_policy_output_size,
                                           splits=h_policy_params,
-                                          name="H_policy"
+                                          name="H_policy",
+                                          normalized=hparams.norm_hyper
                                           )
 
     parameterized_policy_models = build_parametrized_models(hparams, h_policy_params,
