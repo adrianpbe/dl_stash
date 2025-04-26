@@ -8,6 +8,7 @@ from tensorflow import keras
 from  tensorflow.keras import layers
 
 from dl_stash import hyper
+from dl_stash.resnet import ResidualBlock
 import dl_stash.rnp.image
 
 
@@ -46,18 +47,39 @@ class SampleGaussian(layers.Layer):
         return sample
 
 
-def get_simple_encoder(input_shape: tuple[int, int, int]) -> keras.Model:
+def get_backbone(input_shape: tuple[int, int, int]) -> keras.Model:
     encoder_backbone = keras.Sequential(
         [
             layers.Input(shape=input_shape, dtype=tf.float32),
-            layers.Conv2D(filters=32, kernel_size=3, activation="relu"),
-            layers.Conv2D(filters=32, kernel_size=3, activation="relu"),
-            layers.MaxPooling2D(strides=2, padding="same"),
-            layers.Conv2D(filters=64, kernel_size=3, activation="relu"),
-            layers.Conv2D(filters=64, kernel_size=3, activation="relu"),
-            layers.MaxPooling2D(strides=2, padding="same"),
-            layers.GlobalMaxPool2D(),
+            layers.Conv2D(filters=32, kernel_size=5, padding="same"),
+            layers.BatchNormalization(),
+            layers.Activation("relu"),
+            layers.Conv2D(filters=32, kernel_size=5, padding="same"),
+            layers.BatchNormalization(),
+            layers.Activation("relu"),
+            layers.Conv2D(filters=32, kernel_size=5, padding="same"),
+            layers.BatchNormalization(),
+            layers.Activation("relu"),
+            layers.Conv2D(filters=32, kernel_size=5, padding="same"),
+            layers.BatchNormalization(),
+            layers.Activation("relu"),
+            ResidualBlock(32, 3, False),
+            ResidualBlock(32, 3, False),
+            ResidualBlock(32, 3, False),
+            ResidualBlock(32, 3, False),
+            layers.Flatten(),
             layers.Dense(128),
+            layers.LayerNormalization(),
+            layers.Activation("elu"),
+            layers.Dense(128),
+            layers.LayerNormalization(),
+            layers.Activation("elu"),
+            layers.Dense(128),
+            layers.LayerNormalization(),
+            layers.Activation("elu"),
+            layers.Dense(128),
+            layers.LayerNormalization(),
+            layers.Activation("elu"),
         ]
     )
     return encoder_backbone
@@ -89,6 +111,7 @@ class RNPHParams:
     beta: float=0.1
     decoder_state_image_shape: tuple[int, int, int] | None = None
     hyper_decoders_units: list[int] = field(default_factory=lambda:  [64, 64])
+    zk_shortcut: bool = False
 
     def __post_init__(self):
         if self.decoder_state_image_shape is None:
@@ -144,13 +167,20 @@ def compute_h_policy_params(hparams: RNPHParams):
 
 
 def build_hypernetwork_decoder(units: list[int], embedding_size: int, output_size: int, splits: tuple[int, ...], name):
+    middle_layers = []
+    for u in units:
+        middle_layers.extend(
+            [
+                layers.Dense(u),
+                layers.LayerNormalization(),
+                layers.Activation("elu")
+            ]
+        )
     h_backbone = keras.Sequential(
         [
             layers.Input(shape=(embedding_size,), dtype=tf.float32),
-        ] + [
-            layers.Dense(u, activation="relu") for u in units
-        ] + [
-            layers.Dense(output_size)
+        ] + middle_layers + [
+            layers.Dense(output_size, use_bias=False)
         ],
         name=name + "_backbone"
     )
@@ -305,7 +335,7 @@ class RNPDecoder(keras.Model):
         self.reshape_out = layers.Reshape(self.hparams.decoder_state_image_shape)
         if self.hparams.zk_shortcut:
             self.shortcut_add = layers.Add()
-    
+
     def compute_output_shape(self, input_shape):
         # Input is [x, z] where x has the same shape as output
         return input_shape[0]
@@ -363,12 +393,13 @@ class RNPDecoder(keras.Model):
         return (next_z, next_za), (x_hat, a), x_patch, (state_rnn_states, policy_rnn_states)
 
 
+
 class RNPAutoEncoder(keras.Model):
     def __init__(self, hparams: RNPHParams, **kwargs):
         super().__init__(**kwargs)
         self.hparams = hparams
         self.encoder = get_encoder(
-            get_simple_encoder(hparams.img_shape),
+            get_backbone(hparams.img_shape),
             hparams.img_shape,
             hparams.embedding_size,
             name="encoder"
