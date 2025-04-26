@@ -411,19 +411,8 @@ class RNPAutoEncoder(keras.Model):
         )
         self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
         
-        # # Programmatically wrap the train step, this is done
-        # #  to wrap the `train_step` method in a way that tf.function
-        # #  can take into account the input shape of the model (from self.hparams).
-        # #  This would be impossible if simply using a @tf.function decorator!
-        # self.train_step = tf.function(
-        #     self.train_step,
-        #     input_signature=[
-        #         tf.TensorSpec(shape=(None,) + self.hparams.img_shape)
-        #     ],
-        #     reduce_retracing=True,
-        # )
 
-    def  build(self, input_shape):
+    def build(self, input_shape):
         super().build(input_shape)
         self.built = True
 
@@ -440,7 +429,15 @@ class RNPAutoEncoder(keras.Model):
             )
             kl_loss = -0.5 * (1 + z_logvar - tf.math.square(z_mu) - tf.math.exp(z_logvar))
             kl_loss = tf.math.reduce_sum(tf.math.reduce_sum(kl_loss, axis=1))
-            total_loss = reconstruction_loss + self.hparams.beta * kl_loss
+            # HyperNetworks regularization
+            reg_loss = 0
+            if self.hparams.lambda_ != 0:
+                for weight in self.decoder.state_hyper.trainable_weights:
+                    reg_loss += tf.nn.l2_loss(weight)
+                
+                for weight in self.decoder.policy_hyper.trainable_weights:
+                    reg_loss += tf.nn.l2_loss(weight)
+            total_loss = reconstruction_loss + self.hparams.beta * kl_loss + self.hparams.lambda_ * reg_loss
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
         self.total_loss_tracker.update_state(total_loss)
