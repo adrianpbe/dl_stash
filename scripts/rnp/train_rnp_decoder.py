@@ -22,9 +22,11 @@ class DecoderTrainer(keras.Model):
         super().__init__(**kwargs)
         self.hparams = hparams
         self.decoder = RNPDecoder(hparams)
-        self.z = tf.Variable(
-            tf.random.normal((1, hparams.embedding_size), dtype=tf.float32),
-            trainable=True
+        self.z = self.add_weight(
+            shape=(1, hparams.embedding_size), dtype=tf.float32,
+            initializer="random_normal",
+            trainable=True,
+            name="embedding"
         )
         
     def call(self, x):

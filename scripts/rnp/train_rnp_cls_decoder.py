@@ -36,9 +36,11 @@ class ClassDecoderTrainer(keras.Model):
         self.hparams = hparams
         self.decoder = RNPDecoder(hparams)
         # Create a learnable embedding for each class
-        self.class_embeddings = tf.Variable(
-            tf.random.normal((num_classes, hparams.embedding_size), dtype=tf.float32),
-            trainable=True
+        self.class_embeddings = self.add_weight(
+            shape=(num_classes, hparams.embedding_size),dtype=tf.float32,
+            initializer="random_normal",
+            trainable=True,
+            name="embeddings"
         )
         
     def call(self, x):
@@ -50,7 +52,7 @@ class ClassDecoderTrainer(keras.Model):
 
 
 def main():
-    IM_PATH = "rnp_cls_1"
+    IM_PATH = "rnp_cls_2"
     os.makedirs(IM_PATH, exist_ok=True)
     
     # Set hyperparameters
@@ -62,7 +64,8 @@ def main():
         sequence_length=3,
         parametrized_encoders_units=64,
         parametrized_decoders_units=64,
-        hyper_decoders_units=[64, 64]
+        hyper_decoders_units=[64, 64],
+        scale_offset=0
     )
 
     # Get one image per class
@@ -78,7 +81,7 @@ def main():
     
     # Training loop
     print("Starting training...")
-    for epoch in range(10000):
+    for epoch in range(1000):
         with tf.GradientTape() as tape:
             reconstruction = model((target_images, target_labels))
             loss = tf.reduce_mean(tf.square(target_images - reconstruction))

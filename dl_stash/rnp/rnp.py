@@ -113,7 +113,7 @@ class RNPHParams:
     decoder_state_image_shape: tuple[int, int, int] | None = None
     hyper_decoders_units: list[int] = field(default_factory=lambda:  [64, 64])
     zk_shortcut: bool = False
-    norm_hyper: bool = True
+    norm_hyper: bool = False
 
     def __post_init__(self):
         if self.decoder_state_image_shape is None:
