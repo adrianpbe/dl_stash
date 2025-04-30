@@ -64,25 +64,10 @@ def get_affine_transformation_matrix(rotation, shear, offset, scale, images):
         tf.concat([zeros, scale_y], axis=1)
     ], axis=1)
     scale_matrix = tf.reshape(scale_matrix, [-1, 2, 2])
-    
-    # Combine first rotation, then shear, then scale (batch_size, 2, 2)
-    transform = tf.matmul(scale_matrix, tf.matmul(S, R))
-
-    image_shape = tf.shape(images)
-    batch_size = image_shape[0]
-    height, width = image_shape[1], image_shape[2]
-    height = tf.cast(height, tf.float32)
-    width = tf.cast(width, tf.float32)
-    center = tf.cast(tf.stack([width / 2, height / 2])[tf.newaxis, ...], rotation.dtype)
-    center = tf.tile(center, [batch_size, 1])
-    center = tf.expand_dims(center, axis=-1)
-    
-    # Calculate how much the center moves after transform
-    center_displacement = tf.matmul(transform, center) - center
-    
-    # Compensate for center displacement and add final offset
-    final_offset = -center_displacement + tf.expand_dims(offset, axis=-1)
-
+    # Combine first saling, then shear and lastly rotation (batch_size, 2, 2)
+    transform = tf.matmul(R, tf.matmul(S, scale_matrix))
+    offset = scale * offset
+    final_offset = tf.expand_dims(offset, axis=-1)
     # Add offset column (batch_size, 2, 3)
     transform_matrix = tf.concat([transform, final_offset], axis=-1)
     
@@ -124,6 +109,7 @@ def get_inverse_affine_transformation_matrix(rotation, shear, offset, scale, ima
     identity = tf.tile(
         tf.expand_dims(tf.eye(2), 0), [batch_size, 1, 1]
     )
+    offset = scale * offset
     offset_matrix = tf.concat([identity, -tf.expand_dims(offset, axis=-1)], -1)
     transform_matrix = tf.matmul(
         make_homogeneous_transform(A), make_homogeneous_transform(offset_matrix))[:, :-1]

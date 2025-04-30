@@ -206,7 +206,7 @@ def build_hypernetwork_decoder(units: list[int], embedding_size: int, output_siz
 
 
 def build_parametrized_models(hparams: RNPHParams, gen_params: Sequence[int],
-                                    decoder_size: int, rnn_units: int):
+                                    decoder_size: int, rnn_units: int, decoder_activation=None):
     embedding_size = hparams.embedding_size
     action_embedding_size = hparams.action_embedding_size
 
@@ -220,7 +220,7 @@ def build_parametrized_models(hparams: RNPHParams, gen_params: Sequence[int],
 
     x_enc = layers.Concatenate()([z_enc_input, a_emb_enc_input])
     x_enc = hyper.HyperDense(
-        hparams.parametrized_encoders_units, activation="relu")([x_enc, enc_dense1_params_in])
+        hparams.parametrized_encoders_units, activation="elu")([x_enc, enc_dense1_params_in])
     y_enc = hyper.HyperDense(
         hparams.parametrized_encoders_units, activation=None)([x_enc, enc_dense2_params_in])
     
@@ -233,9 +233,9 @@ def build_parametrized_models(hparams: RNPHParams, gen_params: Sequence[int],
     z_dec_input = layers.Input(shape=(embedding_size,), dtype=tf.float32)
 
     x_dec = hyper.HyperDense(
-        hparams.parametrized_decoders_units, activation="relu")([z_dec_input, dec_dense1_params_in])
+        hparams.parametrized_decoders_units, activation="elu")([z_dec_input, dec_dense1_params_in])
     y_dec = hyper.HyperDense(
-        decoder_size, activation=None)([x_dec, dec_dense2_params_in])
+        decoder_size, activation=decoder_activation)([x_dec, dec_dense2_params_in])
 
     decoder = keras.Model(inputs=[z_dec_input, dec_dense1_params_in, dec_dense2_params_in],
                           outputs=y_dec, name="decoder")
@@ -281,12 +281,6 @@ class HyperNetwork(keras.Model):
         return self.hypernetwork(z)
 
 
-@dataclass
-class HyperNetworks:
-    state: HyperNetwork
-    policy: HyperNetwork
-
-
 def build_hypernetworks(hparams: RNPHParams) -> tuple[HyperNetwork, HyperNetwork]:
     hyper_decoders_units = hparams.hyper_decoders_units
 
@@ -305,7 +299,8 @@ def build_hypernetworks(hparams: RNPHParams) -> tuple[HyperNetwork, HyperNetwork
 
     parameterized_state_models = build_parametrized_models(hparams, h_state_params, 
                                                            decoder_size=hparams.x_dec_size,
-                                                           rnn_units=hparams.embedding_size)
+                                                           rnn_units=hparams.embedding_size,
+                                                           decoder_activation="relu")
     
     state_hypernetworks = HyperNetwork(*(h_state, *parameterized_state_models, hparams.embedding_size), 
                                        name="state_hypernetwork"
@@ -325,7 +320,8 @@ def build_hypernetworks(hparams: RNPHParams) -> tuple[HyperNetwork, HyperNetwork
 
     parameterized_policy_models = build_parametrized_models(hparams, h_policy_params,
                                                             decoder_size=NUM_AFFINE_TRANSFORMATION_PARAMETERS,
-                                                            rnn_units=hparams.action_embedding_size)
+                                                            rnn_units=hparams.action_embedding_size,
+                                                            decoder_activation=keras.ops.sin)
     policy_hypernetworks = HyperNetwork(*(h_policy, *parameterized_policy_models, hparams.action_embedding_size),
                                         name="policy_hypernetwork")
 
