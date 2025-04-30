@@ -21,7 +21,7 @@ def sample_patch(image, params, sampling_grid, scale_offset: float):
     default_scale_offset = tf.convert_to_tensor([[0, 0, 0, 0, 1, 1]], dtype=tf.float32)
     offset = default_scale_offset + scale_offset * tf.convert_to_tensor([[0, 0, 0, 0, 1, 1]], dtype=tf.float32)
 
-    params = params + offset
+    params = params + 0.75 * offset
 
     return dl_stash.rnp.image.sample(image, params, sampling_grid)
 
@@ -29,9 +29,9 @@ def sample_patch(image, params, sampling_grid, scale_offset: float):
 def inverse_sample_patch(image, params, sampling_grid, scale_offset: float):
 
     default_scale_offset = tf.convert_to_tensor([[0, 0, 0, 0, 1, 1]], dtype=tf.float32)
-    offset = scale_offset * default_scale_offset
-    
-    params = params + offset
+    offset = default_scale_offset + scale_offset * tf.convert_to_tensor([[0, 0, 0, 0, 1, 1]], dtype=tf.float32)    
+
+    params = params + 0.75 * offset
 
     return dl_stash.rnp.image.inverse_sampling(image, params, sampling_grid)
 
@@ -110,6 +110,7 @@ class RNPHParams:
     scale_offset: float=1.6
     beta: float=0.1
     lambda_: float=0.001
+    lambda_patch: float=0.01
     decoder_state_image_shape: tuple[int, int, int] | None = None
     hyper_decoders_units: list[int] = field(default_factory=lambda:  [64, 64])
     zk_shortcut: bool = False
@@ -348,8 +349,14 @@ class RNPDecoder(keras.Model):
     def call(self, inputs):
         x, z = inputs
         batch_size = tf.shape(x)[0]
-        out = self.rnp_decoder(x, z, self.hparams.levels, batch_size)
+        out, _ = self.rnp_decoder(x, z, self.hparams.levels, batch_size)
         return out
+
+    def call_with_patch_loss(self, inputs):
+        x, z = inputs
+        batch_size = tf.shape(x)[0]
+        out, patch_loss = self.rnp_decoder(x, z, self.hparams.levels, batch_size)
+        return out, patch_loss
 
     @tf.function
     def rnp_decoder(self, x, z, level, batch_size):
@@ -358,6 +365,7 @@ class RNPDecoder(keras.Model):
         *policy_generated_params, za0 = self.policy_hyper(z)
         rnn_states = self.initial_rnn_steps(batch_size)
         out = tf.zeros_like(x)
+        patch_loss = 0
         for _ in range(self.hparams.sequence_length):
             (z0, za0), (x_hat, a), x_patch, rnn_states = self.step(
                 x,
@@ -370,11 +378,19 @@ class RNPDecoder(keras.Model):
                     z0rec = self.shortcut_add([z, z0])
                 else:
                     z0rec = z0
-                out_ = self.rnp_decoder(x_patch, z0rec, level - 1, batch_size)
+                out_, patch_loss_ = self.rnp_decoder(x_patch, z0rec, level - 1, batch_size)
                 out += sample_patch(out_, a, self.sampling_grid, self.hparams.scale_offset)
             else:
-                out += sample_patch(self.reshape_out(x_hat), a, self.sampling_grid, self.hparams.scale_offset)
-        return out
+                x_hat = self.reshape_out(x_hat)
+                patch_loss_ = tf.math.reduce_mean(
+                    tf.math.reduce_sum(
+                        tf.math.square(x_patch - x_hat),
+                        axis=(1,2,3)
+                    )
+                )
+                out += sample_patch(x_hat, a, self.sampling_grid, self.hparams.scale_offset)
+            patch_loss = patch_loss + patch_loss_
+        return out, patch_loss
 
     def initial_rnn_steps(self, batch_size):
         return (
@@ -425,7 +441,7 @@ class RNPAutoEncoder(keras.Model):
     def train_step(self, data):
         with tf.GradientTape() as tape:
             z_k, z_mu, z_logvar = self.encoder(data)
-            reconstruction = self.decoder([data, z_k])
+            reconstruction, patch_loss = self.decoder.call_with_patch_loss([data, z_k])
             reconstruction_loss = tf.math.reduce_mean(
                 tf.math.reduce_sum(
                     tf.math.square(data - reconstruction),
@@ -442,7 +458,7 @@ class RNPAutoEncoder(keras.Model):
                 
                 for weight in self.decoder.policy_hyper.trainable_weights:
                     reg_loss += tf.nn.l2_loss(weight)
-            total_loss = reconstruction_loss + self.hparams.beta * kl_loss + self.hparams.lambda_ * reg_loss
+            total_loss = reconstruction_loss + self.hparams.beta * kl_loss + self.hparams.lambda_ * reg_loss + self.hparams.lambda_patch * patch_loss
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
         self.total_loss_tracker.update_state(total_loss)

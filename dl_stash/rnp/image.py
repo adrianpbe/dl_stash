@@ -116,13 +116,13 @@ def get_inverse_affine_transformation_matrix(rotation, shear, offset, scale, ima
     return transform_matrix
 
 
-def extract_affine_params(image, params):
+def extract_affine_params(image, params, normalize=False):
     """Extracts and normalizes affine transformation parameters from a parameter tensor.
     
     Args:
         image: Tensor of shape (batch_size, height, width, channels)
         params: Tensor of shape (batch_size, 6) containing [rotation, shear, offset_x, offset_y, scale_x, scale_y]
-            where rotation is in radians, shear is a factor, offsets are normalized 
+            where rotation is in radians, shear is a factor, offsets can be normalized 
             between -1 and 1 relative to image dimensions, and scale factors are positive values.
             
     Returns:
@@ -139,15 +139,15 @@ def extract_affine_params(image, params):
     shear = params[:, 1:2]
     offset = params[:, 2:4]
     scale = params[:, 4:6]
-    
-    # Normalize offset by image dimensions
-    # offset_x: -1 corresponds to -width, offset_y: 1 corresponds to height
-    normalized_offset = tf.stack([
-        offset[:, 0] * tf.cast(width, dtype=offset.dtype),
-        offset[:, 1] * tf.cast(height, dtype=offset.dtype)
-    ], axis=1)
-    
-    return rotation, shear, normalized_offset, scale
+    if normalize:
+        # Normalize offset by image dimensions
+        # offset_x: -1 corresponds to -width, offset_y: 1 corresponds to height
+        offset = tf.stack([
+            offset[:, 0] * tf.cast(width, dtype=offset.dtype),
+            offset[:, 1] * tf.cast(height, dtype=offset.dtype)
+        ], axis=1)
+        
+    return rotation, shear, offset, scale
 
 
 def sample(image, params, sampling_grid):
